@@ -1,0 +1,9 @@
+proxmox_endpoint  = "https://proxmox.example.com/"
+proxmox_api_token = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+proxmox_node      = "pve"
+
+template_id = 9000
+vm_id       = 100
+vm_name     = "monitoring"
+
+datastore_id = "local-lvm"

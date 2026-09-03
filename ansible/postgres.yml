@@ -1,0 +1,74 @@
+---
+- name: Configure PostgreSQL Server
+  hosts: postgres
+  become: yes
+  vars:
+    postgres_version: 16
+    postgres_data_dir: /var/lib/postgresql/{{ postgres_version }}/main
+    postgres_bin_path: /usr/lib/postgresql/{{ postgres_version }}/bin
+    vaultwarden_db_name: vaultwarden
+    vaultwarden_db_user: vaultwarden
+    vaultwarden_db_password: "{{ vault_vaultwarden_db_password }}"  # À mettre dans un vault Ansible
+
+  tasks:
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql-{{ postgres_version }}
+          - postgresql-contrib
+          - postgresql-client
+        state: present
+        update_cache: yes
+
+    - name: Ensure PostgreSQL is running
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Create Vaultwarden database
+      community.postgresql.postgresql_db:
+        name: "{{ vaultwarden_db_name }}"
+        state: present
+        owner: "{{ vaultwarden_db_user }}"
+        encoding: UTF-8
+        lc_collate: en_US.UTF-8
+        lc_ctype: en_US.UTF-8
+
+    - name: Create Vaultwarden user
+      community.postgresql.postgresql_user:
+        name: "{{ vaultwarden_db_user }}"
+        password: "{{ vaultwarden_db_password }}"
+        role_attr_flags: CREATEDB,NOLOGIN
+        db: "{{ vaultwarden_db_name }}"
+        state: present
+
+    - name: Configure PostgreSQL for remote access
+      lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf
+        regexp: "^listen_addresses"
+        line: "listen_addresses = '*'"
+        state: present
+      notify: Restart PostgreSQL
+
+    - name: Allow Vaultwarden IP to connect
+      postgresql_pg_hba:
+        dest: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+        contype: host
+        databases: "{{ vaultwarden_db_name }}"
+        method: md5
+        source: "192.168.1.101/32"
+        users: "{{ vaultwarden_db_user }}"
+        create: yes
+
+    - name: Open PostgreSQL port in UFW
+      ufw:
+        rule: allow
+        port: 5432
+        proto: tcp
+
+  handlers:
+    - name: Restart PostgreSQL
+      service:
+        name: postgresql
+        state: restarted

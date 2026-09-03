@@ -1,0 +1,120 @@
+---
+- name: Deploy Vaultwarden
+  hosts: vaultwarden
+  become: yes
+  vars:
+    vaultwarden_version: latest
+    vaultwarden_port: 8080
+    domain_name: "vaultwarden.teo-franoux.fr"  # À adapter
+    postgres_host: "192.168.1.100"
+    postgres_db: "vaultwarden"
+    postgres_user: "vaultwarden"
+    postgres_password: "{{ vault_vaultwarden_db_password }}"  # Même mot de passe
+
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+        state: present
+        update_cache: yes
+
+    - name: Create directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/vaultwarden
+        - /opt/vaultwarden/data
+        - /etc/nginx/sites-enabled
+
+    - name: Create Docker Compose file
+      copy:
+        dest: /opt/vaultwarden/docker-compose.yml
+        content: |
+          version: '3'
+          services:
+            vaultwarden:
+              image: vaultwarden/server:{{ vaultwarden_version }}
+              container_name: vaultwarden
+              restart: unless-stopped
+              ports:
+                - "127.0.0.1:8080:80"
+              volumes:
+                - /opt/vaultwarden/data:/data
+              environment:
+                - DATABASE_URL=postgresql://{{ postgres_user }}:{{ postgres_password }}@{{ postgres_host }}/{{ postgres_db }}
+                - WEBSOCKET_ENABLED=true
+                - SIGNUPS_ALLOWED=false
+                - INVITATIONS_ALLOWED=true
+                - ADMIN_TOKEN={{ vault_admin_token }}  # À générer
+
+    - name: Create Nginx configuration
+      copy:
+        dest: /etc/nginx/sites-available/vaultwarden
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain_name }};
+
+              location /.well-known/acme-challenge/ {
+                  root /var/www/certbot;
+              }
+
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ domain_name }};
+
+              ssl_certificate /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ domain_name }}/privkey.pem;
+              include /etc/letsencrypt/options-ssl-nginx.conf;
+              ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+              location / {
+                  proxy_pass http://127.0.0.1:8080;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/vaultwarden
+        dest: /etc/nginx/sites-enabled/vaultwarden
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Test Nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+
+    - name: Start Docker Compose
+      command: docker-compose -f /opt/vaultwarden/docker-compose.yml up -d
+      args:
+        chdir: /opt/vaultwarden
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Obtain SSL certificate
+      command: certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos --email teo.franoux@epitech.eu
+      when: nginx_test.rc == 0
